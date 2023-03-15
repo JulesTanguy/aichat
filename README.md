@@ -1,9 +1,6 @@
 # AIChat
 
-[![CI](https://github.com/sigoden/aichat/actions/workflows/ci.yaml/badge.svg)](https://github.com/sigoden/aichat/actions/workflows/ci.yaml)
-[![Crates](https://img.shields.io/crates/v/aichat.svg)](https://crates.io/crates/aichat)
-
-Chat with gpt-3.5/chatgpt in terminal.
+this repo aims to be simpler and more compatible than the original (forked) one.
 
 ![demo](https://user-images.githubusercontent.com/4012553/223645914-f397b95f-1a30-4eda-a6a8-5bd0c2903add.gif)
 

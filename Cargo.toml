@@ -41,13 +41,13 @@ nu-ansi-term = "0.46.0"
 
 [dependencies.reqwest]
 version = "0.11.14"
-features = ["json", "stream", "socks", "rustls-tls", "rustls-tls-native-roots"]
+features = ["json", "stream", "socks"]
 default-features = false
 
 [dependencies.syntect]
 version = "5.0.0"
 default-features = false
-features = ["parsing", "regex-onig"]
+features = ["parsing", "default-fancy"]
 
 [profile.release]
 lto = true

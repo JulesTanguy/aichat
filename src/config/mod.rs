@@ -76,7 +76,7 @@ impl Default for Config {
             highlight: true,
             proxy: None,
             dry_run: false,
-            conversation_first: false,
+            conversation_first: true,
             light_theme: false,
             roles: vec![],
             role: None,
@@ -501,11 +501,7 @@ fn ensure_parent_exists(path: &Path) -> Result<()> {
 }
 
 fn get_env_name(key: &str) -> String {
-    format!(
-        "{}_{}",
-        env!("CARGO_CRATE_NAME").to_ascii_uppercase(),
-        key.to_ascii_uppercase(),
-    )
+    format!("OPENAI_{}", key.to_ascii_uppercase(),)
 }
 
 fn set_bool(target: &mut bool, value: &str) {

@@ -37,8 +37,6 @@ impl Repl {
     pub fn run(&mut self, client: ChatGptClient, config: SharedConfig) -> Result<()> {
         let abort = AbortSignal::new();
         let handler = ReplCmdHandler::init(client, config, abort.clone())?;
-        print_now!("Welcome to aichat {}\n", env!("CARGO_PKG_VERSION"));
-        print_now!("Type \".help\" for more information.\n");
         let mut already_ctrlc = false;
         let handler = Arc::new(handler);
         loop {
