@@ -10,9 +10,7 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::time::sleep;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const API_URL: &str = "https://api.openai.com/v1/chat/completions";
-const MODEL: &str = "gpt-3.5-turbo";
 
 #[derive(Debug)]
 pub struct ChatGptClient {
@@ -129,17 +127,19 @@ impl ChatGptClient {
             builder = builder
                 .proxy(Proxy::all(proxy).with_context(|| format!("Invalid proxy `{proxy}`"))?);
         }
+        let timeout = self.config.read().get_connect_timeout();
         let client = builder
-            .connect_timeout(CONNECT_TIMEOUT)
+            .connect_timeout(timeout)
             .build()
             .with_context(|| "Failed to build http client")?;
         Ok(client)
     }
 
     fn request_builder(&self, content: &str, stream: bool) -> Result<RequestBuilder> {
+        let (model, _) = self.config.read().get_model();
         let messages = self.config.read().build_messages(content)?;
         let mut body = json!({
-            "model": MODEL,
+            "model": model,
             "messages": messages,
         });
 
@@ -153,11 +153,17 @@ impl ChatGptClient {
                 .and_then(|m| m.insert("stream".into(), json!(true)));
         }
 
-        let builder = self
+        let (api_key, organization_id) = self.config.read().get_api_key();
+
+        let mut builder = self
             .build_client()?
             .post(API_URL)
-            .bearer_auth(self.config.read().get_api_key())
+            .bearer_auth(api_key)
             .json(&body);
+
+        if let Some(organization_id) = organization_id {
+            builder = builder.header("OpenAI-Organization", organization_id);
+        }
 
         Ok(builder)
     }

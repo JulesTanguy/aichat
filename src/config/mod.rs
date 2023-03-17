@@ -12,6 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use inquire::{Confirm, Text};
 use parking_lot::RwLock;
 use serde::Deserialize;
+use std::time::Duration;
 use std::{
     env,
     fs::{create_dir_all, read_to_string, File, OpenOptions},
@@ -21,12 +22,17 @@ use std::{
     sync::Arc,
 };
 
+pub const MODELS: [(&str, usize); 3] = [
+    ("gpt-4", 8192),
+    ("gpt-4-32k", 32768),
+    ("gpt-3.5-turbo", 4096),
+];
+
 const CONFIG_FILE_NAME: &str = "config.yaml";
 const ROLES_FILE_NAME: &str = "roles.yaml";
 const HISTORY_FILE_NAME: &str = "history.txt";
 const MESSAGE_FILE_NAME: &str = "messages.md";
-const SET_COMPLETIONS: [&str; 9] = [
-    ".set api_key",
+const SET_COMPLETIONS: [&str; 8] = [
     ".set temperature",
     ".set save true",
     ".set save false",
@@ -42,6 +48,11 @@ const SET_COMPLETIONS: [&str; 9] = [
 pub struct Config {
     /// Openai api key
     pub api_key: Option<String>,
+    /// Openai organization id
+    pub organization_id: Option<String>,
+    /// Openai model
+    #[serde(rename(serialize = "model", deserialize = "model"))]
+    pub model_name: Option<String>,
     /// What sampling temperature to use, between 0 and 2
     pub temperature: Option<f64>,
     /// Whether to persistently save chat messages
@@ -56,6 +67,8 @@ pub struct Config {
     pub conversation_first: bool,
     /// Is ligth theme
     pub light_theme: bool,
+    /// Set a timeout in seconds for connect to gpt
+    pub connect_timeout: usize,
     /// Predefined roles
     #[serde(skip)]
     pub roles: Vec<Role>,
@@ -65,12 +78,16 @@ pub struct Config {
     /// Current conversation
     #[serde(skip)]
     pub conversation: Option<Conversation>,
+    #[serde(skip)]
+    pub model: (String, usize),
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             api_key: None,
+            organization_id: None,
+            model_name: None,
             temperature: None,
             save: false,
             highlight: true,
@@ -78,9 +95,11 @@ impl Default for Config {
             dry_run: false,
             conversation_first: true,
             light_theme: false,
+            connect_timeout: 10,
             roles: vec![],
             role: None,
             conversation: None,
+            model: ("gpt-3.5-turbo".into(), 4096),
         }
     }
 }
@@ -104,6 +123,9 @@ impl Config {
         }
         if config.api_key.is_none() {
             bail!("api_key not set");
+        }
+        if let Some(name) = config.model_name.clone() {
+            config.set_model(&name)?;
         }
         config.merge_env_vars();
         config.maybe_proxy();
@@ -181,8 +203,10 @@ impl Config {
         Self::local_file(CONFIG_FILE_NAME)
     }
 
-    pub fn get_api_key(&self) -> &String {
-        self.api_key.as_ref().expect("api_key not set")
+    pub fn get_api_key(&self) -> (String, Option<String>) {
+        let api_key = self.api_key.as_ref().expect("api_key not set");
+        let organization_id = self.organization_id.as_ref();
+        (api_key.into(), organization_id.cloned())
     }
 
     pub fn roles_file() -> Result<PathBuf> {
@@ -251,6 +275,14 @@ impl Config {
         }
     }
 
+    pub fn get_connect_timeout(&self) -> Duration {
+        Duration::from_secs(self.connect_timeout as u64)
+    }
+
+    pub fn get_model(&self) -> (String, usize) {
+        self.model.clone()
+    }
+
     pub fn build_messages(&self, content: &str) -> Result<Vec<Message>> {
         let messages = if let Some(conversation) = self.conversation.as_ref() {
             conversation.build_emssages(content)
@@ -260,9 +292,26 @@ impl Config {
             let message = Message::new(content);
             vec![message]
         };
-        within_max_tokens_limit(&messages)?;
+        within_max_tokens_limit(&messages, self.model.1)?;
 
         Ok(messages)
+    }
+
+    pub fn set_model(&mut self, name: &str) -> Result<()> {
+        if let Some(token) = MODELS.iter().find(|(v, _)| *v == name).map(|(_, v)| *v) {
+            self.model = (name.to_string(), token);
+        } else {
+            bail!("Invalid model")
+        }
+        Ok(())
+    }
+
+    pub fn get_reamind_tokens(&self) -> usize {
+        let mut tokens = self.model.1;
+        if let Some(conversation) = self.conversation.as_ref() {
+            tokens = tokens.saturating_sub(conversation.tokens);
+        }
+        tokens
     }
 
     pub fn info(&self) -> Result<String> {
@@ -279,17 +328,22 @@ impl Config {
             .temperature
             .map(|v| v.to_string())
             .unwrap_or("-".into());
+        let (api_key, organization_id) = self.get_api_key();
+        let organization_id = organization_id.unwrap_or("-".into());
         let items = vec![
             ("config_file", file_info(&Config::config_file()?)),
             ("roles_file", file_info(&Config::roles_file()?)),
             ("messages_file", file_info(&Config::messages_file()?)),
-            ("api_key", self.get_api_key().to_string()),
+            ("api_key", api_key),
+            ("organization_id", organization_id),
+            ("model", self.model.0.to_string()),
             ("temperature", temperature),
             ("save", self.save.to_string()),
             ("highlight", self.highlight.to_string()),
             ("proxy", proxy),
             ("conversation_first", self.conversation_first.to_string()),
             ("light_theme", self.light_theme.to_string()),
+            ("connect_timeout", self.connect_timeout.to_string()),
             ("dry_run", self.dry_run.to_string()),
         ];
         let mut output = String::new();
@@ -307,6 +361,7 @@ impl Config {
             .collect();
 
         completion.extend(SET_COMPLETIONS.map(|v| v.to_string()));
+        completion.extend(MODELS.map(|(v, _)| format!(".model {}", v)));
         completion
     }
 
@@ -319,13 +374,6 @@ impl Config {
         let value = parts[1];
         let unset = value == "null";
         match key {
-            "api_key" => {
-                if unset {
-                    bail!("Error: Not allowed");
-                } else {
-                    self.api_key = Some(value.to_string());
-                }
-            }
             "temperature" => {
                 if unset {
                     self.temperature = None;
@@ -359,14 +407,12 @@ impl Config {
     }
 
     pub fn start_conversation(&mut self) -> Result<()> {
-        if let Some(conversation) = self.conversation.as_ref() {
-            if conversation.reamind_tokens() > 0 {
-                let ans = Confirm::new("Already in a conversation, start a new one?")
-                    .with_default(true)
-                    .prompt()?;
-                if !ans {
-                    return Ok(());
-                }
+        if self.conversation.is_some() && self.get_reamind_tokens() > 0 {
+            let ans = Confirm::new("Already in a conversation, start a new one?")
+                .with_default(true)
+                .prompt()?;
+            if !ans {
+                return Ok(());
             }
         }
         self.conversation = Some(Conversation::new(self.role.clone()));
